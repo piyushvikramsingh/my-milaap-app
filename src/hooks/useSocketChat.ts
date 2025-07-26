@@ -10,92 +10,83 @@ export const useSocketChat = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
 
-  // Initialize socket connection
-  useEffect(() => {
-    connectSocket();
+  // This function will be called from the UI to initiate the connection
+  const startSocketConnection = useCallback(() => {
+    if (!socket.connected) {
+      console.log('🔌 Connecting to server via explicit call...');
+      connectSocket();
+    }
+  }, []);
 
-    // Register user when socket connects
-    socket.on('connect', () => {
-      console.log('Connected to server');
+  // Setup socket event listeners on mount
+  useEffect(() => {
+    console.log('Setting up socket listeners...');
+
+    const onConnect = () => {
+      console.log('✅ Connected to server');
+      
+      const names = ['Alex', 'Sam', 'Jordan', 'Casey', 'Taylor', 'Morgan', 'Riley', 'Blake', 'Avery', 'Quinn'];
+      const cities = ['New York', 'London', 'Tokyo', 'Paris', 'Sydney', 'Berlin', 'Toronto', 'Mumbai', 'Seoul', 'São Paulo'];
+      const countries = ['USA', 'UK', 'Japan', 'France', 'Australia', 'Germany', 'Canada', 'India', 'South Korea', 'Brazil'];
       
       const userData = {
-        name: `User${Math.floor(Math.random() * 1000)}`,
-        location: 'Earth', // You can implement geolocation here
+        name: names[Math.floor(Math.random() * names.length)],
+        location: `${cities[Math.floor(Math.random() * cities.length)]}, ${countries[Math.floor(Math.random() * countries.length)]}`,
       };
       
+      console.log('👤 Registering user:', userData);
       socket.emit('join-platform', userData);
-    });
+    };
 
-    socket.on('user-registered', (user: User) => {
+    const onUserRegistered = (user: User) => {
+      console.log('✅ User registered:', user);
       setCurrentUser(user);
-    });
+    };
 
-    socket.on('online-count', (count: number) => {
+    const onOnlineCount = (count: number) => {
+      console.log('👥 Online count updated:', count);
       setOnlineCount(count);
-    });
+    };
 
-    socket.on('partner-found', ({ partner, roomId }) => {
-      console.log('Partner found:', partner);
+    const onPartnerFound = ({ partner, roomId }: { partner: User, roomId: string }) => {
+      console.log('🎯 Partner found:', partner, 'Room:', roomId);
       setCurrentPartner(partner);
       setIsConnecting(false);
       setIsConnected(true);
       setMessages([]);
       
-      // Add system message
       const systemMessage: Message = {
         id: `${Date.now()}-system`,
         userId: 'system',
-        content: `Connected with ${partner.name} from ${partner.location}`,
+        content: `🎉 Connected with ${partner.name} from ${partner.location}`,
         timestamp: new Date(),
         type: 'system',
       };
       setMessages([systemMessage]);
-    });
+    };
 
-    socket.on('new-message', (message: Message) => {
+    const onNewMessage = (message: Message) => {
+      console.log('💬 New message received:', message);
       setMessages(prev => [...prev, message]);
-    });
+    };
 
-    socket.on('partner-disconnected', () => {
-      const disconnectMessage: Message = {
-        id: `${Date.now()}-system`,
-        userId: 'system',
-        content: 'Partner disconnected',
-        timestamp: new Date(),
-        type: 'system',
-      };
-      setMessages(prev => [...prev, disconnectMessage]);
-      setCurrentPartner(null);
-      setIsConnected(false);
-    });
+    const onPartnerDisconnected = () => {
+      console.log('👋 Partner disconnected');
+      handlePartnerLeave('Partner disconnected. Finding new partner...');
+    };
 
-    socket.on('partner-skipped', () => {
-      const skipMessage: Message = {
-        id: `${Date.now()}-system`,
-        userId: 'system',
-        content: 'Partner skipped to next person',
-        timestamp: new Date(),
-        type: 'system',
-      };
-      setMessages(prev => [...prev, skipMessage]);
-      setCurrentPartner(null);
-      setIsConnected(false);
-    });
+    const onPartnerSkipped = () => {
+      console.log('⏭️ Partner skipped');
+      handlePartnerLeave('Partner skipped to next person. Finding new partner...');
+    };
 
-    socket.on('partner-reported', () => {
-      const reportMessage: Message = {
-        id: `${Date.now()}-system`,
-        userId: 'system',
-        content: 'You were reported by your partner',
-        timestamp: new Date(),
-        type: 'system',
-      };
-      setMessages(prev => [...prev, reportMessage]);
-      setCurrentPartner(null);
-      setIsConnected(false);
-    });
+    const onPartnerReported = () => {
+      console.log('🚨 You were reported');
+      handlePartnerLeave('You were reported. Finding new partner...');
+    };
 
-    socket.on('partner-liked', ({ from }) => {
+    const onPartnerLiked = ({ from }: { from: User }) => {
+      console.log('❤️ Partner liked you:', from);
       const likeMessage: Message = {
         id: `${Date.now()}-system`,
         userId: 'system',
@@ -104,50 +95,141 @@ export const useSocketChat = () => {
         type: 'system',
       };
       setMessages(prev => [...prev, likeMessage]);
-    });
+    };
+
+    const onDisconnect = () => {
+      console.log('❌ Disconnected from server');
+      setCurrentPartner(null);
+      setIsConnected(false);
+      setIsConnecting(false);
+    };
+
+    // Attach listeners
+    socket.on('connect', onConnect);
+    socket.on('user-registered', onUserRegistered);
+    socket.on('online-count', onOnlineCount);
+    socket.on('partner-found', onPartnerFound);
+    socket.on('new-message', onNewMessage);
+    socket.on('partner-disconnected', onPartnerDisconnected);
+    socket.on('partner-skipped', onPartnerSkipped);
+    socket.on('partner-reported', onPartnerReported);
+    socket.on('partner-liked', onPartnerLiked);
+    socket.on('disconnect', onDisconnect);
 
     return () => {
-      socket.off('connect');
-      socket.off('user-registered');
-      socket.off('online-count');
-      socket.off('partner-found');
-      socket.off('new-message');
-      socket.off('partner-disconnected');
-      socket.off('partner-skipped');
-      socket.off('partner-reported');
-      socket.off('partner-liked');
+      console.log('🧹 Cleaning up socket listeners');
+      socket.off('connect', onConnect);
+      socket.off('user-registered', onUserRegistered);
+      socket.off('online-count', onOnlineCount);
+      socket.off('partner-found', onPartnerFound);
+      socket.off('new-message', onNewMessage);
+      socket.off('partner-disconnected', onPartnerDisconnected);
+      socket.off('partner-skipped', onPartnerSkipped);
+      socket.off('partner-reported', onPartnerReported);
+      socket.off('partner-liked', onPartnerLiked);
+      socket.off('disconnect', onDisconnect);
     };
   }, []);
 
+  // Helper function to handle partner leaving
+  const handlePartnerLeave = useCallback((message: string) => {
+    const leaveMessage: Message = {
+      id: `${Date.now()}-system`,
+      userId: 'system',
+      content: message,
+      timestamp: new Date(),
+      type: 'system',
+    };
+    setMessages(prev => [...prev, leaveMessage]);
+    setCurrentPartner(null);
+    setIsConnected(false);
+    
+    setTimeout(() => {
+      console.log('🔄 Auto-starting new partner search...');
+      findPartner();
+    }, 2000);
+  }, []);
+
   const findPartner = useCallback(() => {
+    if (isConnecting) {
+      console.log('⏳ Already searching for partner...');
+      return;
+    }
+
+    console.log('🔍 Finding new partner...');
     setIsConnecting(true);
     setIsConnected(false);
     setCurrentPartner(null);
-    setMessages([]);
+    
+    const searchMessage: Message = {
+      id: `${Date.now()}-system`,
+      userId: 'system',
+      content: '🔍 Searching for a new partner...',
+      timestamp: new Date(),
+      type: 'system',
+    };
+    setMessages([searchMessage]);
+    
     socket.emit('find-partner');
-  }, []);
+  }, [isConnecting]);
 
   const sendMessage = useCallback((content: string) => {
-    if (!content.trim() || !isConnected) return;
-
+    if (!content.trim() || !isConnected) {
+      return;
+    }
     socket.emit('send-message', { content: content.trim() });
   }, [isConnected]);
 
   const skipPartner = useCallback(() => {
     socket.emit('skip-partner');
+    
+    const skipMessage: Message = {
+      id: `${Date.now()}-system`,
+      userId: 'system',
+      content: '⏭️ Skipping to next person...',
+      timestamp: new Date(),
+      type: 'system',
+    };
+    setMessages(prev => [...prev, skipMessage]);
     setIsConnecting(true);
-    socket.emit('find-partner');
   }, []);
 
   const reportPartner = useCallback((reason = 'inappropriate_behavior') => {
     socket.emit('report-partner', reason);
+    
+    const reportMessage: Message = {
+      id: `${Date.now()}-system`,
+      userId: 'system',
+      content: '🚨 Partner reported. Finding new partner...',
+      timestamp: new Date(),
+      type: 'system',
+    };
+    setMessages(prev => [...prev, reportMessage]);
     setIsConnecting(true);
-    socket.emit('find-partner');
   }, []);
 
   const likePartner = useCallback(() => {
     socket.emit('like-partner');
+    
+    const likeMessage: Message = {
+      id: `${Date.now()}-system`,
+      userId: 'system',
+      content: '❤️ You liked this person!',
+      timestamp: new Date(),
+      type: 'system',
+    };
+    setMessages(prev => [...prev, likeMessage]);
   }, []);
+
+  // Auto-start finding partner when user registers
+  useEffect(() => {
+    if (currentUser && !isConnected && !isConnecting && !currentPartner) {
+      console.log('🚀 Auto-starting partner search for new user...');
+      setTimeout(() => {
+        findPartner();
+      }, 1000);
+    }
+  }, [currentUser, isConnected, isConnecting, currentPartner, findPartner]);
 
   return {
     currentUser,
@@ -156,6 +238,7 @@ export const useSocketChat = () => {
     isConnected,
     isConnecting,
     onlineCount,
+    startSocketConnection,
     findPartner,
     sendMessage,
     skipPartner,
