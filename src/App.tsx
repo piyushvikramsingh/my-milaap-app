@@ -19,6 +19,7 @@ const App: React.FC = () => {
     isConnected,
     isConnecting,
     onlineCount,
+    connectionError,
     startSocketConnection,
     sendMessage,
     skipPartner,
@@ -241,6 +242,21 @@ const App: React.FC = () => {
           <div className="flex items-center space-x-2 bg-green-600 bg-opacity-80 rounded-lg px-3 py-2 backdrop-blur-sm">
             <div className="w-2 h-2 bg-white rounded-full" />
             <span className="text-white text-xs font-medium">Video Call Active</span>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Connection Error Indicator */}
+      {connectionError && (
+        <motion.div
+          className="fixed top-44 left-4 z-20"
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <div className="flex items-center space-x-2 bg-red-600 bg-opacity-90 rounded-lg px-3 py-2 backdrop-blur-sm border border-red-500">
+            <div className="w-2 h-2 bg-white rounded-full" />
+            <span className="text-white text-xs font-medium">{connectionError}</span>
           </div>
         </motion.div>
       )}

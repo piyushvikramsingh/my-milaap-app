@@ -27,6 +27,7 @@ app.use(express.json());
 const activeUsers = new Map();
 const waitingQueue = [];
 const activeRooms = new Map();
+let isMatching = false; // Prevent concurrent matching
 
 // Simulate baseline online users for demo
 let simulatedOnlineCount = Math.floor(Math.random() * 1000) + 100;
@@ -60,10 +61,10 @@ app.get('/api/stats', (req, res) => {
 });
 
 // Auto-match function - runs more frequently for better experience
-const autoMatch = () => {
-  if (waitingQueue.length >= 2) {
+const autoMatch = async () => {
+  if (waitingQueue.length >= 2 && !isMatching) {
     console.log(`🔄 Auto-matching: ${waitingQueue.length} users in queue`);
-    matchUsers();
+    await matchUsers();
   }
 };
 
@@ -81,7 +82,8 @@ io.on('connection', (socket) => {
       name: userData.name || `User${Math.floor(Math.random() * 1000)}`,
       location: userData.location || getRandomLocation(),
       joinedAt: new Date(),
-      isActive: true
+      isActive: true,
+      socketConnected: true
     };
     
     activeUsers.set(socket.id, user);
@@ -96,29 +98,39 @@ io.on('connection', (socket) => {
   });
 
   // Find new partner
-  socket.on('find-partner', () => {
+  socket.on('find-partner', async () => {
     const user = activeUsers.get(socket.id);
     if (!user) {
       console.log('❌ User not found for find-partner request');
+      socket.emit('error', { message: 'User not registered' });
       return;
     }
 
     console.log(`🔍 ${user.name} is looking for a partner`);
 
     // Remove from any existing room first
-    leaveCurrentRoom(socket.id);
+    await leaveCurrentRoom(socket.id);
 
     // Add to waiting queue if not already there
     const existingIndex = waitingQueue.findIndex(u => u.id === socket.id);
     if (existingIndex === -1) {
+      // Update user status
+      user.isActive = true;
+      user.waitingSince = new Date();
+      
       waitingQueue.push(user);
       console.log(`➕ Added ${user.name} to queue. Queue length: ${waitingQueue.length}`);
+      
+      // Notify user they're in queue
+      socket.emit('queue-joined', { position: waitingQueue.length });
     } else {
       console.log(`⚠️ ${user.name} already in queue`);
     }
 
-    // Try to match immediately
-    setTimeout(matchUsers, 200);
+    // Try to match immediately with a delay to ensure both sides are ready
+    setTimeout(async () => {
+      await matchUsers();
+    }, 500);
   });
 
   // Send message in room
@@ -226,10 +238,18 @@ io.on('connection', (socket) => {
   });
 
   // Handle disconnect
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     const user = activeUsers.get(socket.id);
     console.log(`❌ User disconnected: ${user?.name || socket.id}`);
     
+    // Update user status
+    if (user) {
+      user.isActive = false;
+      user.socketConnected = false;
+      user.currentRoom = null;
+      user.waitingSince = null;
+    }
+
     // Remove from waiting queue
     const queueIndex = waitingQueue.findIndex(u => u.id === socket.id);
     if (queueIndex > -1) {
@@ -238,7 +258,7 @@ io.on('connection', (socket) => {
     }
     
     // Leave room and notify partner
-    leaveCurrentRoom(socket.id);
+    await leaveCurrentRoom(socket.id);
     
     // Remove from active users
     activeUsers.delete(socket.id);
@@ -251,84 +271,155 @@ io.on('connection', (socket) => {
 });
 
 // Helper Functions
-function matchUsers() {
-  while (waitingQueue.length >= 2) {
-    const user1 = waitingQueue.shift();
-    const user2 = waitingQueue.shift();
-    
-    // Validate both users are still connected
-    const socket1 = io.sockets.sockets.get(user1.id);
-    const socket2 = io.sockets.sockets.get(user2.id);
-    
-    if (!socket1 || !socket2) {
-      console.log('⚠️ One or both users disconnected during matching');
-      if (socket1) waitingQueue.unshift(user1);
-      if (socket2) waitingQueue.unshift(user2);
-      continue;
+async function matchUsers() {
+  if (isMatching) {
+    console.log('⏳ Matching already in progress, skipping...');
+    return;
+  }
+
+  isMatching = true;
+  
+  try {
+    while (waitingQueue.length >= 2) {
+      const user1 = waitingQueue.shift();
+      const user2 = waitingQueue.shift();
+      
+      // Validate both users are still connected and active
+      const socket1 = io.sockets.sockets.get(user1.id);
+      const socket2 = io.sockets.sockets.get(user2.id);
+      const user1Data = activeUsers.get(user1.id);
+      const user2Data = activeUsers.get(user2.id);
+      
+      if (!socket1 || !socket2 || !user1Data || !user2Data) {
+        console.log('⚠️ One or both users disconnected during matching');
+        // Put back valid users
+        if (socket1 && user1Data) {
+          waitingQueue.unshift(user1);
+        }
+        if (socket2 && user2Data) {
+          waitingQueue.unshift(user2);
+        }
+        continue;
+      }
+
+      // Check if users are already in a room
+      if (findUserRoom(user1.id) || findUserRoom(user2.id)) {
+        console.log('⚠️ One or both users already in a room');
+        continue;
+      }
+      
+      const roomId = uuidv4();
+      const room = {
+        id: roomId,
+        users: [user1.id, user2.id],
+        createdAt: new Date(),
+        status: 'active'
+      };
+      
+      activeRooms.set(roomId, room);
+      
+      // Update user statuses
+      user1Data.isActive = true;
+      user1Data.currentRoom = roomId;
+      user2Data.isActive = true;
+      user2Data.currentRoom = roomId;
+      
+      // Join both users to the socket room
+      socket1.join(roomId);
+      socket2.join(roomId);
+      
+      // Notify both users of the match with a delay to ensure proper setup
+      setTimeout(() => {
+        socket1.emit('partner-found', {
+          partner: {
+            id: user2.id,
+            name: user2Data.name,
+            location: user2Data.location
+          },
+          roomId: roomId
+        });
+        
+        socket2.emit('partner-found', {
+          partner: {
+            id: user1.id,
+            name: user1Data.name,
+            location: user1Data.location
+          },
+          roomId: roomId
+        });
+      }, 100);
+      
+      console.log(`✅ Successfully matched ${user1.name} with ${user2.name} in room ${roomId}`);
+      
+      // Add small delay between matches to prevent overwhelming
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
-    
-    const roomId = uuidv4();
-    const room = {
-      id: roomId,
-      users: [user1.id, user2.id],
-      createdAt: new Date()
-    };
-    
-    activeRooms.set(roomId, room);
-    
-    // Join both users to the socket room
-    socket1.join(roomId);
-    socket2.join(roomId);
-    
-    // Notify both users of the match
-    socket1.emit('partner-found', {
-      partner: activeUsers.get(user2.id),
-      roomId: roomId
-    });
-    
-    socket2.emit('partner-found', {
-      partner: activeUsers.get(user1.id),
-      roomId: roomId
-    });
-    
-    console.log(`✅ Successfully matched ${user1.name} with ${user2.name} in room ${roomId}`);
+  } finally {
+    isMatching = false;
   }
 }
 
 function findUserRoom(userId) {
   for (const [roomId, room] of activeRooms) {
-    if (room.users.includes(userId)) {
+    if (room.users.includes(userId) && room.status === 'active') {
       return roomId;
     }
   }
   return null;
 }
 
-function leaveCurrentRoom(userId) {
+async function leaveCurrentRoom(userId) {
   const roomId = findUserRoom(userId);
   if (roomId) {
     const room = activeRooms.get(roomId);
     if (room) {
       console.log(`🚪 User ${userId} leaving room ${roomId}`);
       
+      // Update room status
+      room.status = 'closing';
+      
+      // Update user status
+      const userData = activeUsers.get(userId);
+      if (userData) {
+        userData.currentRoom = null;
+      }
+      
       // Notify partner about disconnect
       const partnerId = room.users.find(id => id !== userId);
       if (partnerId) {
         console.log(`📢 Notifying ${partnerId} about disconnect`);
-        io.to(partnerId).emit('partner-disconnected');
+        const partnerSocket = io.sockets.sockets.get(partnerId);
+        if (partnerSocket) {
+          partnerSocket.emit('partner-disconnected');
+          partnerSocket.leave(roomId);
+        }
+        
+        // Update partner status
+        const partnerData = activeUsers.get(partnerId);
+        if (partnerData) {
+          partnerData.currentRoom = null;
+        }
       }
       
-      // Remove users from socket room
-      room.users.forEach(uid => {
-        const socket = io.sockets.sockets.get(uid);
-        if (socket) {
-          socket.leave(roomId);
-        }
-      });
+      // Remove user from socket room
+      const userSocket = io.sockets.sockets.get(userId);
+      if (userSocket) {
+        userSocket.leave(roomId);
+      }
       
-      activeRooms.delete(roomId);
-      console.log(`🗑️ Room ${roomId} deleted`);
+      // Clean up room
+      setTimeout(() => {
+        activeRooms.delete(roomId);
+        console.log(`🗑️ Room ${roomId} deleted`);
+      }, 1000);
     }
+  }
+  
+  // Remove from waiting queue if present
+  const queueIndex = waitingQueue.findIndex(u => u.id === userId);
+  if (queueIndex > -1) {
+    waitingQueue.splice(queueIndex, 1);
+    console.log(`➖ Removed ${userId} from queue. New queue length: ${waitingQueue.length}`);
   }
 }
 

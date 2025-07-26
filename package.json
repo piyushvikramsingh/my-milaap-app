@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:docker": "docker build -t streamconnect-frontend .",
+    "deploy:docker": "docker-compose up -d"
   },
   "dependencies": {
     "@faker-js/faker": "^9.9.0",
