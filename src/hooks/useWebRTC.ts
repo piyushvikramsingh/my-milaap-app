@@ -21,6 +21,8 @@ export const useWebRTC = () => {
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
+  const currentTargetId = useRef<string | null>(null);
 
   // ICE servers (STUN servers for NAT traversal)
   const iceServers = [
@@ -36,6 +38,11 @@ export const useWebRTC = () => {
     try {
       console.log('🎥 Initializing WebRTC and requesting camera/mic access...');
       
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('getUserMedia is not supported in this browser');
+      }
+
       // Get user media with optimized constraints
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -67,22 +74,32 @@ export const useWebRTC = () => {
       // Set local video source immediately
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        localVideoRef.current.muted = true; // Prevent audio feedback
+        localVideoRef.current.autoplay = true;
+        localVideoRef.current.playsInline = true;
         
         // Ensure video plays
+        const playVideo = () => {
+          if (localVideoRef.current) {
+            localVideoRef.current.play().catch(err => {
+              console.error('❌ Error playing local video:', err);
+              // Try again with user interaction
+              setTimeout(() => {
+                if (localVideoRef.current) {
+                  localVideoRef.current.play().catch(console.error);
+                }
+              }, 1000);
+            });
+          }
+        };
+
         localVideoRef.current.onloadedmetadata = () => {
           console.log('🎬 Local video metadata loaded, starting playback...');
-          localVideoRef.current?.play().catch(err => {
-            console.error('❌ Error playing local video:', err);
-          });
+          playVideo();
         };
 
         // Force play after a short delay
-        setTimeout(() => {
-          if (localVideoRef.current && localVideoRef.current.paused) {
-            console.log('🔄 Force playing local video...');
-            localVideoRef.current.play().catch(console.error);
-          }
-        }, 200);
+        setTimeout(playVideo, 200);
       }
 
       return stream;
@@ -90,30 +107,53 @@ export const useWebRTC = () => {
     } catch (error) {
       console.error('❌ Error getting user media:', error);
       
-      // Try audio only as fallback
-      try {
-        console.log('🔄 Trying audio-only fallback...');
-        const audioStream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          } 
-        });
-        
-        setState(prev => ({ 
-          ...prev, 
-          localStream: audioStream, 
-          isCameraOn: false,
-          isMicOn: true 
-        }));
-        
-        return audioStream;
-      } catch (audioError) {
-        console.error('❌ Error getting audio:', audioError);
-        alert('Please allow camera and microphone access to use this app');
-        return null;
+      // Try different fallback strategies
+      const fallbackStrategies = [
+        // Strategy 1: Try with lower video quality
+        {
+          video: { width: 640, height: 480, frameRate: 15 },
+          audio: { echoCancellation: true, noiseSuppression: true }
+        },
+        // Strategy 2: Try audio only
+        {
+          audio: { echoCancellation: true, noiseSuppression: true }
+        },
+        // Strategy 3: Try basic constraints
+        {
+          video: true,
+          audio: true
+        }
+      ];
+
+      for (const constraints of fallbackStrategies) {
+        try {
+          console.log('🔄 Trying fallback strategy:', constraints);
+          const fallbackStream = await navigator.mediaDevices.getUserMedia(constraints);
+          
+          setState(prev => ({ 
+            ...prev, 
+            localStream: fallbackStream,
+            isCameraOn: fallbackStream.getVideoTracks().length > 0,
+            isMicOn: fallbackStream.getAudioTracks().length > 0
+          }));
+
+          if (localVideoRef.current && fallbackStream.getVideoTracks().length > 0) {
+            localVideoRef.current.srcObject = fallbackStream;
+            localVideoRef.current.muted = true;
+            localVideoRef.current.autoplay = true;
+            localVideoRef.current.playsInline = true;
+            localVideoRef.current.play().catch(console.error);
+          }
+          
+          return fallbackStream;
+        } catch (fallbackError) {
+          console.error('❌ Fallback strategy failed:', fallbackError);
+        }
       }
+
+      // If all strategies fail
+      alert('Camera and microphone access are required. Please check your browser settings and permissions.');
+      return null;
     }
   }, []);
 
@@ -142,26 +182,41 @@ export const useWebRTC = () => {
       // Set remote video immediately
       if (remoteVideoRef.current && remoteStream) {
         remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.autoplay = true;
+        remoteVideoRef.current.playsInline = true;
         
+        const playRemoteVideo = () => {
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.play().catch(err => {
+              console.error('❌ Error playing remote video:', err);
+              // Try again
+              setTimeout(() => {
+                if (remoteVideoRef.current) {
+                  remoteVideoRef.current.play().catch(console.error);
+                }
+              }, 1000);
+            });
+          }
+        };
+
         remoteVideoRef.current.onloadedmetadata = () => {
           console.log('🎬 Remote video metadata loaded, starting playback...');
-          remoteVideoRef.current?.play().catch(console.error);
+          playRemoteVideo();
         };
         
         // Force play
-        setTimeout(() => {
-          if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-            remoteVideoRef.current.play().catch(console.error);
-          }
-        }, 200);
+        setTimeout(playRemoteVideo, 200);
       }
     };
 
     // Handle ICE candidates
     peerConnection.current.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('🧊 Sending ICE candidate');
-        // We'll set the target in the specific methods
+      if (event.candidate && currentTargetId.current) {
+        console.log('🧊 Sending ICE candidate to:', currentTargetId.current);
+        socket.emit('webrtc-ice-candidate', {
+          candidate: event.candidate,
+          target: currentTargetId.current
+        });
       }
     };
 
@@ -179,6 +234,7 @@ export const useWebRTC = () => {
         if (connectionState === 'failed' || connectionState === 'disconnected') {
           console.log('❌ WebRTC connection failed/disconnected');
           setState(prev => ({ ...prev, remoteStream: null }));
+          currentTargetId.current = null;
         }
       }
     };
@@ -186,7 +242,18 @@ export const useWebRTC = () => {
     // Handle ICE connection state
     peerConnection.current.oniceconnectionstatechange = () => {
       if (peerConnection.current) {
-        console.log('🧊 ICE Connection state:', peerConnection.current.iceConnectionState);
+        const iceState = peerConnection.current.iceConnectionState;
+        console.log('🧊 ICE Connection state:', iceState);
+        
+        // Process pending candidates if connection is ready
+        if (iceState === 'checking' || iceState === 'connected') {
+          while (pendingCandidates.current.length > 0) {
+            const candidate = pendingCandidates.current.shift();
+            if (candidate && peerConnection.current) {
+              peerConnection.current.addIceCandidate(candidate).catch(console.error);
+            }
+          }
+        }
       }
     };
 
@@ -208,6 +275,7 @@ export const useWebRTC = () => {
 
     try {
       console.log('📞 Creating offer for:', targetId);
+      currentTargetId.current = targetId;
       
       const offer = await peerConnection.current.createOffer({
         offerToReceiveAudio: true,
@@ -237,6 +305,7 @@ export const useWebRTC = () => {
 
     try {
       console.log('📞 Creating answer for:', senderId);
+      currentTargetId.current = senderId;
       
       await peerConnection.current.setRemoteDescription(offer);
       console.log('✅ Remote description set');
@@ -271,7 +340,11 @@ export const useWebRTC = () => {
 
   // Handle ICE candidate
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
-    if (!peerConnection.current) return;
+    if (!peerConnection.current) {
+      console.log('🧊 Storing ICE candidate for later');
+      pendingCandidates.current.push(candidate);
+      return;
+    }
 
     try {
       console.log('🧊 Adding ICE candidate');
@@ -279,6 +352,8 @@ export const useWebRTC = () => {
       console.log('✅ ICE candidate added');
     } catch (error) {
       console.error('❌ Error handling ICE candidate:', error);
+      // Store for retry
+      pendingCandidates.current.push(candidate);
     }
   }, []);
 
@@ -290,6 +365,11 @@ export const useWebRTC = () => {
         videoTrack.enabled = !videoTrack.enabled;
         setState(prev => ({ ...prev, isCameraOn: videoTrack.enabled }));
         console.log('📹 Camera toggled:', videoTrack.enabled ? 'ON' : 'OFF');
+        
+        // Update video element visibility
+        if (localVideoRef.current) {
+          localVideoRef.current.style.opacity = videoTrack.enabled ? '1' : '0';
+        }
       }
     }
   }, [state.localStream]);
@@ -329,6 +409,9 @@ export const useWebRTC = () => {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
+
+    currentTargetId.current = null;
+    pendingCandidates.current = [];
 
     setState({
       localStream: null,
