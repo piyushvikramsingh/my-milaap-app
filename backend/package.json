@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "build": "echo 'No build step needed for Node.js'"
+    "build": "echo 'No build step needed for Node.js'",
+    "build:docker": "docker build -t streamconnect-backend .",
+    "test": "echo \"No tests specified\" && exit 0"
   },
   "dependencies": {
     "socket.io": "^4.7.5",
@@ -18,5 +20,8 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

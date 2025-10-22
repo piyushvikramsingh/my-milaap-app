@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Video, VideoOff, User, Mic, MicOff } from 'lucide-react';
 
@@ -25,6 +25,83 @@ const VideoFrame: React.FC<VideoFrameProps> = ({
   isMicOn = true,
   className = '',
 }) => {
+  const retryCount = useRef(0);
+  const maxRetries = 3;
+
+  // Handle video play with retry logic
+  const handleVideoPlay = async (videoElement: HTMLVideoElement) => {
+    if (!videoElement) return;
+
+    try {
+      await videoElement.play();
+      retryCount.current = 0;
+      console.log(`✅ Video playing successfully for ${isPartner ? 'partner' : 'local'}`);
+    } catch (error) {
+      console.error(`❌ Video play error for ${isPartner ? 'partner' : 'local'}:`, error);
+      
+      if (retryCount.current < maxRetries) {
+        retryCount.current++;
+        console.log(`🔄 Retrying video play (attempt ${retryCount.current}/${maxRetries})`);
+        
+        setTimeout(() => {
+          handleVideoPlay(videoElement);
+        }, 1000 * retryCount.current);
+      } else {
+        console.error(`❌ Max retries reached for ${isPartner ? 'partner' : 'local'} video`);
+      }
+    }
+  };
+
+  // Auto-play video when stream is available
+  useEffect(() => {
+    if (videoRef?.current && hasVideo && isCameraOn) {
+      const videoElement = videoRef.current;
+      
+      // Configure video element
+      videoElement.autoplay = true;
+      videoElement.playsInline = true;
+      videoElement.controls = false;
+      
+      if (!isPartner) {
+        videoElement.muted = true; // Prevent audio feedback for local video
+      }
+
+      // Handle metadata loaded
+      const handleLoadedMetadata = () => {
+        console.log(`🎬 Video metadata loaded for ${isPartner ? 'partner' : 'local'}`);
+        handleVideoPlay(videoElement);
+      };
+
+      // Handle can play
+      const handleCanPlay = () => {
+        console.log(`▶️ Video can play for ${isPartner ? 'partner' : 'local'}`);
+        handleVideoPlay(videoElement);
+      };
+
+      // Handle error
+      const handleError = (e: Event) => {
+        console.error(`❌ Video error for ${isPartner ? 'partner' : 'local'}:`, e);
+        // Reset retry count on new error
+        retryCount.current = 0;
+      };
+
+      videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+      videoElement.addEventListener('canplay', handleCanPlay);
+      videoElement.addEventListener('error', handleError);
+
+      // Initial play attempt
+      if (videoElement.readyState >= 2) { // HAVE_CURRENT_DATA
+        handleVideoPlay(videoElement);
+      }
+
+      return () => {
+        videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        videoElement.removeEventListener('canplay', handleCanPlay);
+        videoElement.removeEventListener('error', handleError);
+      };
+    }
+  }, [videoRef, hasVideo, isCameraOn, isPartner]);
+
   return (
     <div className={`relative bg-gradient-to-br from-gray-900 to-black rounded-lg overflow-hidden border border-gray-800 ${className}`}>
       {/* Video element */}
@@ -34,6 +111,7 @@ const VideoFrame: React.FC<VideoFrameProps> = ({
           autoPlay
           playsInline
           muted={!isPartner} // Mute local video to prevent feedback
+          controls={false}
           className={`w-full h-full object-cover transition-opacity duration-300 ${
             !hasVideo || (!isCameraOn && !isPartner) ? 'opacity-0' : 'opacity-100'
           }`}
@@ -46,6 +124,12 @@ const VideoFrame: React.FC<VideoFrameProps> = ({
           }}
           onError={(e) => {
             console.error(`❌ Video error for ${isPartner ? 'partner' : 'local'}:`, e);
+          }}
+          onPlay={() => {
+            console.log(`▶️ Video started playing for ${isPartner ? 'partner' : 'local'}`);
+          }}
+          onPause={() => {
+            console.log(`⏸️ Video paused for ${isPartner ? 'partner' : 'local'}`);
           }}
         />
       )}
@@ -67,7 +151,7 @@ const VideoFrame: React.FC<VideoFrameProps> = ({
               transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
             />
             <p className="text-white text-sm font-medium">
-              {isPartner ? 'Connecting to partner...' : 'Finding your camera...'}
+              {isPartner ? 'Connecting to partner...' : 'Initializing camera...'}
             </p>
           </motion.div>
         ) : (
@@ -132,40 +216,65 @@ const VideoFrame: React.FC<VideoFrameProps> = ({
           {/* Media status indicators */}
           <div className="absolute bottom-3 right-3 flex space-x-2">
             {/* Camera indicator */}
-            <div className={`p-1.5 rounded-full backdrop-blur-sm ${
-              isCameraOn ? 'bg-green-500 bg-opacity-70' : 'bg-red-500 bg-opacity-70'
-            }`}>
+            <motion.div 
+              className={`p-1.5 rounded-full backdrop-blur-sm ${
+                isCameraOn ? 'bg-green-500 bg-opacity-70' : 'bg-red-500 bg-opacity-70'
+              }`}
+              whileHover={{ scale: 1.1 }}
+              transition={{ duration: 0.2 }}
+            >
               {isCameraOn ? (
                 <Video className="w-3 h-3 text-white" />
               ) : (
                 <VideoOff className="w-3 h-3 text-white" />
               )}
-            </div>
+            </motion.div>
 
             {/* Mic indicator */}
-            <div className={`p-1.5 rounded-full backdrop-blur-sm ${
-              isMicOn ? 'bg-green-500 bg-opacity-70' : 'bg-red-500 bg-opacity-70'
-            }`}>
+            <motion.div 
+              className={`p-1.5 rounded-full backdrop-blur-sm ${
+                isMicOn ? 'bg-green-500 bg-opacity-70' : 'bg-red-500 bg-opacity-70'
+              }`}
+              whileHover={{ scale: 1.1 }}
+              transition={{ duration: 0.2 }}
+            >
               {isMicOn ? (
                 <Mic className="w-3 h-3 text-white" />
               ) : (
                 <MicOff className="w-3 h-3 text-white" />
               )}
-            </div>
+            </motion.div>
           </div>
         </>
       )}
 
       {/* Connection quality indicator */}
       {isPartner && isConnected && hasVideo && (
-        <div className="absolute top-3 right-3">
+        <motion.div
+          className="absolute top-3 right-3"
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3 }}
+        >
           <div className="flex items-center space-x-1 bg-black bg-opacity-70 rounded-full px-2 py-1 backdrop-blur-sm">
-            <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
-            <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
-            <div className="w-1.5 h-1.5 bg-green-400 rounded-full"></div>
+            <motion.div 
+              className="w-1.5 h-1.5 bg-green-400 rounded-full"
+              animate={{ scale: [1, 1.2, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            />
+            <motion.div 
+              className="w-1.5 h-1.5 bg-green-400 rounded-full"
+              animate={{ scale: [1, 1.2, 1] }}
+              transition={{ duration: 2, repeat: Infinity, delay: 0.2 }}
+            />
+            <motion.div 
+              className="w-1.5 h-1.5 bg-green-400 rounded-full"
+              animate={{ scale: [1, 1.2, 1] }}
+              transition={{ duration: 2, repeat: Infinity, delay: 0.4 }}
+            />
             <span className="text-green-400 text-xs ml-1">HD</span>
           </div>
-        </div>
+        </motion.div>
       )}
     </div>
   );
